@@ -1,9 +1,9 @@
 name: Release Build
 
 on:
-#  push:
-#    branches:
-#      - master
+ push:
+   branches:
+     - master
 #    paths:
 #      - 'CHANGELOG.md'
   workflow_dispatch:
@@ -34,7 +34,7 @@ jobs:
     if: ${{ needs.prepare.outputs.sign }}
     strategy:
       matrix:
-        product: [ app, google ]
+        product: [ app ]
       fail-fast: false
     runs-on: ubuntu-latest
     env:
