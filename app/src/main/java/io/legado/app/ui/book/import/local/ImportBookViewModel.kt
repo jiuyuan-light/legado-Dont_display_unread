@@ -1,28 +1,27 @@
 package io.legado.app.ui.book.import.local
 
 import android.app.Application
-import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern.archiveFileRegex
 import io.legado.app.constant.AppPattern.bookFileRegex
 import io.legado.app.constant.PreferKey
 import io.legado.app.model.localBook.LocalBook
+import io.legado.app.utils.AlphanumComparator
 import io.legado.app.utils.FileDoc
+import io.legado.app.utils.delete
 import io.legado.app.utils.getPrefInt
-import io.legado.app.utils.isContentScheme
 import io.legado.app.utils.list
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Dispatchers.Main
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.Collections
 import kotlin.coroutines.coroutineContext
 
@@ -32,20 +31,24 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
     var sort = context.getPrefInt(PreferKey.localBookImportSort)
     var dataCallback: DataCallback? = null
     var dataFlowStart: (() -> Unit)? = null
-    val dataFlow = callbackFlow<List<FileDoc>> {
+    val dataFlow = callbackFlow<List<ImportBook>> {
 
-        val list = Collections.synchronizedList(ArrayList<FileDoc>())
+        val list = Collections.synchronizedList(ArrayList<ImportBook>())
 
         dataCallback = object : DataCallback {
 
             override fun setItems(fileDocs: List<FileDoc>) {
                 list.clear()
-                list.addAll(fileDocs)
+                fileDocs.mapTo(list) {
+                    ImportBook(it)
+                }
                 trySend(list)
             }
 
             override fun addItems(fileDocs: List<FileDoc>) {
-                list.addAll(fileDocs)
+                fileDocs.mapTo(list) {
+                    ImportBook(it)
+                }
                 trySend(list)
             }
 
@@ -63,6 +66,10 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
                     )
                 }
             }
+
+            override fun upAdapter() {
+                trySend(list)
+            }
         }
 
         withContext(Main) {
@@ -74,27 +81,18 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
         }
 
     }.map { docList ->
-        when (sort) {
-            2 -> docList.sortedWith(
-                compareBy({ !it.isDir }, { -it.lastModified }, { it.name })
-            )
-            1 -> docList.sortedWith(
-                compareBy({ !it.isDir }, { -it.size }, { it.name })
-            )
-            else -> docList.sortedWith(
-                compareBy({ !it.isDir }, { it.name })
-            )
-        }
+        val comparator = when (sort) {
+            2 -> compareBy<ImportBook>({ !it.isDir }, { -it.lastModified })
+            1 -> compareBy({ !it.isDir }, { -it.size })
+            else -> compareBy { !it.isDir }
+        } then compareBy(AlphanumComparator) { it.name }
+        docList.sortedWith(comparator)
     }.flowOn(IO)
 
-    fun addToBookshelf(uriList: HashSet<String>, finally: () -> Unit) {
+    fun addToBookshelf(bookList: HashSet<ImportBook>, finally: () -> Unit) {
         execute {
-            val fileUris = uriList.map {
-                if (it.isContentScheme()) {
-                    Uri.parse(it)
-                } else {
-                    Uri.fromFile(File(it))
-                }
+            val fileUris = bookList.map {
+                it.file.uri
             }
             LocalBook.importFiles(fileUris)
         }.onError {
@@ -105,17 +103,10 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
         }
     }
 
-    fun deleteDoc(uriList: HashSet<String>, finally: () -> Unit) {
+    fun deleteDoc(bookList: HashSet<ImportBook>, finally: () -> Unit) {
         execute {
-            uriList.forEach {
-                val uri = Uri.parse(it)
-                if (uri.isContentScheme()) {
-                    DocumentFile.fromSingleUri(context, uri)?.delete()
-                } else {
-                    uri.path?.let { path ->
-                        File(path).delete()
-                    }
-                }
+            bookList.forEach {
+                it.file.delete()
             }
         }.onFinally {
             finally.invoke()
@@ -181,7 +172,7 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
     }
 
     fun updateCallBackFlow(filterKey: String?) {
-       dataCallback?.screen(filterKey)
+        dataCallback?.screen(filterKey)
     }
 
     interface DataCallback {
@@ -193,6 +184,8 @@ class ImportBookViewModel(application: Application) : BaseViewModel(application)
         fun clear()
 
         fun screen(key: String?)
+
+        fun upAdapter()
 
     }
 
