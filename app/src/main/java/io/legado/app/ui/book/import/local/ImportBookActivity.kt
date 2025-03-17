@@ -253,10 +253,9 @@ class ImportBookActivity : BaseImportBookActivity<ImportBookViewModel>(),
             binding.refreshProgressBar.isAutoLoading = true
             scanDocJob?.cancel()
             scanDocJob = lifecycleScope.launch(IO) {
-                viewModel.scanDoc(lastDoc, true) {
-                    withContext(Main) {
-                        binding.refreshProgressBar.isAutoLoading = false
-                    }
+                viewModel.scanDoc(lastDoc)
+                withContext(Main) {
+                    binding.refreshProgressBar.isAutoLoading = false
                 }
             }
         }
@@ -305,7 +304,12 @@ class ImportBookActivity : BaseImportBookActivity<ImportBookViewModel>(),
     override fun startRead(fileDoc: FileDoc) {
         if (!ArchiveUtils.isArchive(fileDoc.name)) {
             appDb.bookDao.getBookByFileName(fileDoc.name)?.let {
-                startReadBook(it.bookUrl)
+                val filePath = fileDoc.toString()
+                if (it.bookUrl != filePath) {
+                    it.bookUrl = filePath
+                    appDb.bookDao.insert(it)
+                }
+                startReadBook(it)
             }
         } else {
             onArchiveFileClick(fileDoc)
