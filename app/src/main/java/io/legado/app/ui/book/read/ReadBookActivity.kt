@@ -18,7 +18,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.view.get
-import androidx.core.view.isVisible
 import androidx.core.view.size
 import androidx.lifecycle.lifecycleScope
 import com.jaredrummler.android.colorpicker.ColorPickerDialogListener
@@ -52,6 +51,7 @@ import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ReadTipConfig
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.help.source.getSourceType
 import io.legado.app.help.storage.Backup
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
@@ -60,13 +60,13 @@ import io.legado.app.lib.theme.accentColor
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadBook
 import io.legado.app.model.analyzeRule.AnalyzeRule
+import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
 import io.legado.app.model.localBook.EpubFile
 import io.legado.app.model.localBook.MobiFile
 import io.legado.app.receiver.NetworkChangedListener
 import io.legado.app.receiver.TimeBatteryReceiver
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.about.AppLogDialog
-import io.legado.app.ui.book.audio.AudioPlayActivity
 import io.legado.app.ui.book.bookmark.BookmarkDialog
 import io.legado.app.ui.book.changesource.ChangeBookSourceDialog
 import io.legado.app.ui.book.changesource.ChangeChapterSourceDialog
@@ -105,6 +105,7 @@ import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.StartActivityContract
 import io.legado.app.utils.applyOpenTint
 import io.legado.app.utils.buildMainHandler
+import io.legado.app.utils.dismissDialogFragment
 import io.legado.app.utils.getPrefBoolean
 import io.legado.app.utils.getPrefString
 import io.legado.app.utils.hexString
@@ -120,6 +121,7 @@ import io.legado.app.utils.postEvent
 import io.legado.app.utils.showDialogFragment
 import io.legado.app.utils.showHelp
 import io.legado.app.utils.startActivity
+import io.legado.app.utils.startActivityForBook
 import io.legado.app.utils.sysScreenOffTime
 import io.legado.app.utils.throttle
 import io.legado.app.utils.toastOnUi
@@ -173,23 +175,22 @@ class ReadBookActivity : BaseReadBookActivity(),
             }
         }
     private val searchContentActivity =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            it.data?.let { data ->
-                val key = data.getLongExtra("key", System.currentTimeMillis())
-                val index = data.getIntExtra("index", 0)
-                val searchResult = IntentData.get<SearchResult>("searchResult$key")
-                val searchResultList = IntentData.get<List<SearchResult>>("searchResultList$key")
-                if (searchResult != null && searchResultList != null) {
-                    viewModel.searchContentQuery = searchResult.query
-                    binding.searchMenu.upSearchResultList(searchResultList)
-                    isShowingSearchResult = true
-                    viewModel.searchResultIndex = index
-                    binding.searchMenu.updateSearchResultIndex(index)
-                    binding.searchMenu.selectedSearchResult?.let { currentResult ->
-                        ReadBook.saveCurrentBookProgress() //退出全文搜索恢复此时进度
-                        skipToSearch(currentResult)
-                        showActionMenu()
-                    }
+        registerForActivityResult(StartActivityContract(SearchContentActivity::class.java)) {
+            val data = it.data ?: return@registerForActivityResult
+            val key = data.getLongExtra("key", System.currentTimeMillis())
+            val index = data.getIntExtra("index", 0)
+            val searchResult = IntentData.get<SearchResult>("searchResult$key")
+            val searchResultList = IntentData.get<List<SearchResult>>("searchResultList$key")
+            if (searchResult != null && searchResultList != null) {
+                viewModel.searchContentQuery = searchResult.query
+                binding.searchMenu.upSearchResultList(searchResultList)
+                isShowingSearchResult = true
+                viewModel.searchResultIndex = index
+                binding.searchMenu.updateSearchResultIndex(index)
+                binding.searchMenu.selectedSearchResult?.let { currentResult ->
+                    ReadBook.saveCurrentBookProgress() //退出全文搜索恢复此时进度
+                    skipToSearch(currentResult)
+                    showActionMenu()
                 }
             }
         }
@@ -198,6 +199,8 @@ class ReadBookActivity : BaseReadBookActivity(),
             if (it.resultCode == RESULT_OK) {
                 setResult(RESULT_DELETED)
                 super.finish()
+            } else {
+                ReadBook.loadOrUpContent()
             }
         }
     private val selectImageDir = registerForActivityResult(HandleFileContract()) {
@@ -229,7 +232,6 @@ class ReadBookActivity : BaseReadBookActivity(),
     override val pageFactory get() = binding.readView.pageFactory
     override val pageDelegate get() = binding.readView.pageDelegate
     override val headerHeight: Int get() = binding.readView.curPage.headerHeight
-    private val menuLayoutIsVisible get() = bottomDialog > 0 || binding.readMenu.isVisible || binding.searchMenu.bottomMenuVisible
     private val nextPageDebounce by lazy { Debounce { keyPage(PageDirection.NEXT) } }
     private val prevPageDebounce by lazy { Debounce { keyPage(PageDirection.PREV) } }
     private var bookChanged = false
@@ -1088,9 +1090,7 @@ class ReadBookActivity : BaseReadBookActivity(),
                     ReadBook.book?.delete()
                     appDb.bookDao.insert(book)
                 }
-                startActivity<AudioPlayActivity> {
-                    putExtra("bookUrl", book.bookUrl)
-                }
+                startActivityForBook(book)
                 finish()
             }
         }
@@ -1137,6 +1137,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         if (isAutoPage) {
             binding.readView.autoPager.stop()
             binding.readMenu.setAutoPage(false)
+            dismissDialogFragment<AutoReadDialog>()
             upScreenTimeOut()
         }
     }
@@ -1178,17 +1179,16 @@ class ReadBookActivity : BaseReadBookActivity(),
      * 打开搜索界面
      */
     override fun openSearchActivity(searchWord: String?) {
-        ReadBook.book?.let {
-            searchContentActivity.launch(Intent(this, SearchContentActivity::class.java).apply {
-                putExtra("bookUrl", it.bookUrl)
-                putExtra("searchWord", searchWord ?: viewModel.searchContentQuery)
-                putExtra("searchResultIndex", viewModel.searchResultIndex)
-                viewModel.searchResultList?.first()?.let {
-                    if (it.query == viewModel.searchContentQuery) {
-                        IntentData.put("searchResultList", viewModel.searchResultList)
-                    }
+        val book = ReadBook.book ?: return
+        searchContentActivity.launch {
+            putExtra("bookUrl", book.bookUrl)
+            putExtra("searchWord", searchWord ?: viewModel.searchContentQuery)
+            putExtra("searchResultIndex", viewModel.searchResultIndex)
+            viewModel.searchResultList?.first()?.let {
+                if (it.query == viewModel.searchContentQuery) {
+                    IntentData.put("searchResultList", viewModel.searchResultList)
                 }
-            })
+            }
         }
     }
 
@@ -1279,7 +1279,7 @@ class ReadBookActivity : BaseReadBookActivity(),
         alert(R.string.chapter_pay) {
             setMessage(chapter.title)
             yesButton {
-                Coroutine.async {
+                Coroutine.async(lifecycleScope) {
                     val source =
                         ReadBook.bookSource ?: throw NoStackTraceException("no book source")
                     val payAction = source.getContentRule().payAction
@@ -1287,15 +1287,19 @@ class ReadBookActivity : BaseReadBookActivity(),
                         throw NoStackTraceException("no pay action")
                     }
                     val analyzeRule = AnalyzeRule(book, source)
+                    analyzeRule.setCoroutineContext(coroutineContext)
                     analyzeRule.setBaseUrl(chapter.url)
                     analyzeRule.chapter = chapter
                     analyzeRule.evalJS(payAction).toString()
                 }.onSuccess(IO) {
                     if (it.isAbsUrl()) {
                         startActivity<WebViewActivity> {
+                            val bookSource = ReadBook.bookSource
                             putExtra("title", getString(R.string.chapter_pay))
                             putExtra("url", it)
-                            IntentData.put(it, ReadBook.bookSource?.getHeaderMap(true))
+                            putExtra("sourceOrigin", bookSource?.bookSourceUrl)
+                            putExtra("sourceName", bookSource?.bookSourceName)
+                            putExtra("sourceType", bookSource?.getSourceType())
                         }
                     } else if (it.isTrue()) {
                         //购买成功后刷新目录

@@ -43,6 +43,7 @@ object SourceVerificationHelp {
                 putExtra("imageUrl", url)
                 putExtra("sourceOrigin", source.getKey())
                 putExtra("sourceName", source.getTag())
+                putExtra("sourceType", source.getSourceType())
                 IntentData.put(getVerificationResultKey(source), Thread.currentThread())
             }
         } else {
@@ -82,9 +83,9 @@ object SourceVerificationHelp {
             putExtra("url", url)
             putExtra("sourceOrigin", source.getKey())
             putExtra("sourceName", source.getTag())
+            putExtra("sourceType", source.getSourceType())
             putExtra("sourceVerificationEnable", saveResult)
             putExtra("refetchAfterSuccess", refetchAfterSuccess)
-            IntentData.put(url, source.getHeaderMap(true))
             IntentData.put(getVerificationResultKey(source), Thread.currentThread())
         }
     }
