@@ -12,12 +12,15 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.RssArticle
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.CacheManager
 import io.legado.app.help.JsExtensions
 import io.legado.app.help.http.CookieStore
 import io.legado.app.help.source.getShareScope
+import io.legado.app.model.Debug
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.GSON
+import io.legado.app.utils.GSONStrict
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.getOrPutLimit
@@ -48,7 +51,8 @@ import kotlin.coroutines.EmptyCoroutineContext
 @Suppress("unused", "RegExpRedundantEscape", "MemberVisibilityCanBePrivate")
 class AnalyzeRule(
     var ruleData: RuleDataInterface? = null,
-    private val source: BaseSource? = null
+    private val source: BaseSource? = null,
+    private val preUpdateJs: Boolean = false
 ) : JsExtensions {
 
     val book get() = ruleData as? BaseBook
@@ -73,8 +77,11 @@ class AnalyzeRule(
     private val regexCache = hashMapOf<String, Regex?>()
     private val scriptCache = hashMapOf<String, CompiledScript>()
     private var topScopeRef: WeakReference<Scriptable>? = null
+    private var evalJSCallCount = 0
 
     private var coroutineContext: CoroutineContext = EmptyCoroutineContext
+
+    private var loggedNonStandardJSON = false
 
     @JvmOverloads
     fun setContent(content: Any?, baseUrl: String? = null): AnalyzeRule {
@@ -406,9 +413,20 @@ class AnalyzeRule(
         val putMatcher = putPattern.matcher(vRuleStr)
         while (putMatcher.find()) {
             vRuleStr = vRuleStr.replace(putMatcher.group(), "")
-            GSON.fromJsonObject<Map<String, String>>(putMatcher.group(1))
+            val putJsonStr = putMatcher.group(1)
+            val putJson = GSONStrict.fromJsonObject<Map<String, String>>(putJsonStr)
+                .getOrNull()
+            if (putJson != null) {
+                putMap.putAll(putJson)
+                continue
+            }
+            GSON.fromJsonObject<Map<String, String>>(putJsonStr)
                 .getOrNull()
                 ?.let {
+                    if (!loggedNonStandardJSON) {
+                        Debug.log("≡@put 规则 JSON 格式不规范，请改为规范格式")
+                        loggedNonStandardJSON = true
+                    }
                     putMap.putAll(it)
                 }
         }
@@ -764,7 +782,9 @@ class AnalyzeRule(
         val topScope = source?.getShareScope(coroutineContext) ?: topScopeRef?.get()
         val scope = if (topScope == null) {
             RhinoScriptEngine.getRuntimeScope(bindings).apply {
-                topScopeRef = WeakReference(prototype)
+                if (evalJSCallCount++ > 16) {
+                    topScopeRef = WeakReference(prototype)
+                }
             }
         } else {
             bindings.apply {
@@ -815,6 +835,7 @@ class AnalyzeRule(
      * 重新获取book
      */
     fun reGetBook() {
+        if (!preUpdateJs) throw NoStackTraceException("只能在 preUpdateJs 中调用")
         val bookSource = source as? BookSource
         val book = book as? Book
         if (bookSource == null || book == null) return
@@ -833,23 +854,10 @@ class AnalyzeRule(
     }
 
     /**
-     * 刷新详情页
-     */
-    fun refreshBook() {
-        val bookSource = source as? BookSource
-        val book = book as? Book
-        if (bookSource == null || book == null) return
-        runBlocking(coroutineContext) {
-            withTimeout(1800000) {
-                WebBook.getBookInfoAwait(bookSource, book, false)
-            }
-        }
-    }
-
-    /**
      * 更新tocUrl,有些书源目录url定期更新,可以在js调用更新
      */
     fun refreshTocUrl() {
+        if (!preUpdateJs) throw NoStackTraceException("只能在 preUpdateJs 中调用")
         val bookSource = source as? BookSource
         val book = book as? Book
         if (bookSource == null || book == null) return
