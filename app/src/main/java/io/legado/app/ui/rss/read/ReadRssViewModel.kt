@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.script.rhino.runScriptWithContext
 import io.legado.app.base.BaseViewModel
 import io.legado.app.constant.AppConst
+import io.legado.app.constant.AppConst.imagePathKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.RssArticle
 import io.legado.app.data.entities.RssSource
@@ -20,6 +21,7 @@ import io.legado.app.help.http.newCallResponseBody
 import io.legado.app.help.http.okHttpClient
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.rss.Rss
+import io.legado.app.utils.ACache
 import io.legado.app.utils.toastOnUi
 import io.legado.app.utils.writeBytes
 import kotlinx.coroutines.Dispatchers.IO
@@ -108,19 +110,20 @@ class ReadRssViewModel(application: Application) : BaseViewModel(application) {
     }
 
     fun refresh(finish: () -> Unit) {
-        rssArticle?.let { rssArticle ->
-            rssSource?.let {
-                val ruleContent = it.ruleContent
-                if (!ruleContent.isNullOrBlank()) {
-                    loadContent(rssArticle, ruleContent)
-                } else {
-                    finish.invoke()
-                }
-            } ?: let {
-                appCtx.toastOnUi("订阅源不存在")
-                finish.invoke()
-            }
-        } ?: finish.invoke()
+        val rssArticle = rssArticle ?: return finish.invoke()
+        if (!rssArticle.description.isNullOrBlank()) {
+            return finish.invoke()
+        }
+        val rssSource = rssSource ?: let {
+            appCtx.toastOnUi("订阅源不存在")
+            return finish.invoke()
+        }
+        val ruleContent = rssSource.ruleContent
+        if (!ruleContent.isNullOrBlank()) {
+            loadContent(rssArticle, ruleContent)
+        } else {
+            finish.invoke()
+        }
     }
 
     fun favorite() {
@@ -177,6 +180,7 @@ class ReadRssViewModel(application: Application) : BaseViewModel(application) {
             val byteArray = webData2bitmap(webPic) ?: throw NoStackTraceException("NULL")
             uri.writeBytes(context, fileName, byteArray)
         }.onError {
+            ACache.get().remove(imagePathKey)
             context.toastOnUi("保存图片失败:${it.localizedMessage}")
         }.onSuccess {
             context.toastOnUi("保存成功")
